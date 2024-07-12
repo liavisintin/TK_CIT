@@ -1,0 +1,334 @@
+---
+title: "Mycotoxin Example"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(coda)
+library(ggplot2)
+library(here)
+library(tidyverse)
+library(psych)
+mdir <- "MCSim"
+source(here::here(mdir,"setup_MCSim.R"))
+set_PATH() # For Windows
+# Make mod.exe (used to create mcsim executable from model file)
+makemod()
+model_file<- "Mycotoxin-PK.model.r"
+makemcsim(model_file)
+calibplotfolder <- "Calibration Plots"
+```
+
+
+
+```{r deterministic run}
+
+in_file_default <- "Mycotoxin-default-run.in.R" 
+out_file_default <- "Mycotoxin-default-run.out"
+out_default <- mcsim(model_file=model_file, in_file = in_file_default,
+                    out_file = out_file_default)
+out_default_df <- pivot_longer(out_default,cols=2:4)
+# Plot
+ggplot1 <- ggplot(out_default_df)+geom_line(aes(x=Time,y=value))+
+  facet_wrap(~name,scales="free_y")
+
+ggplot1
+#camparison with exp. data
+data<-read.csv("data_CIT.csv")
+ggplot1+
+  geom_line(data=out_default_df, aes(x=Time,y=value))+
+  geom_point(data=data, aes(x=Time,y=Obs))+
+  facet_wrap(~name, scales="free_y")+# +scale_y_log10(limits=c(0.01, 10))+
+ # ggtitle("Dose = 50 µg; bw = 70 kg; ktot = 1.02 h-1; Fgutabs = 0.32;\nkufrac = 0.8; kgutelim = 0.6; kumet = 1; Vd = 2,1 L/kg; Vdmet = 2.1L/kg")+
+  theme(plot.title = element_text(size=7))
+
+```
+
+```{r test calibration with short MCMC runs}
+set.seed(33) # Change seed until can compute at starting point
+in_file_test <- "Mycotoxin-MCMC-test-calib.in.R" 
+# Run model
+out_file <- ""
+chains <- list()
+checks <- data.frame()
+samps <- data.frame()
+samps.mcmc <- list()
+
+for (chainnum in 1:4) {
+  outtest.list <- mcsim(model_file=model_file, in_file=in_file_test, chainnum=chainnum)
+  print("Chain: "); print(chainnum)
+  outcheck <- outtest.list$df_check
+  outchain <- outtest.list$df_out
+  # Only save second half (after burn-in)
+  outsamp <- outchain[floor(nrow(outchain) / 2):nrow(outchain), -1]
+  chains <- c(chains, list(as.matrix(outchain)))
+  checks <- rbind(checks, outcheck)
+  samps <- rbind(samps, outsamp)
+  samps.mcmc <- c(samps.mcmc, list(mcmc(outsamp)))
+}
+
+multicheck <- mcsim.multicheck(model_file=model_file,
+                                 in_file=in_file_test, nsamp = 1100)
+samps.mcmclist <- as.mcmc.list(samps.mcmc)
+save(samps.mcmclist, file = "mcmc_model.calib.Rdata")
+
+# One random sample, random iteration "checks" from last row of each chain
+checksplot <- ggplot(subset(checks,Output_Var %in% c("Ccpt_out", "Ctot_out", "Qu_out", "Q_fec_out", "Qu_tot_out")))+
+  geom_point(aes(x=Data, y=Prediction, color=Output_Var))+
+  scale_x_log10()+
+  scale_y_log10()+
+  geom_abline(slope = 1,intercept = 0)+
+  facet_wrap(~Simulation)
+print(checksplot)
+
+```
+
+```{r calibrate using MCMC}
+
+set.seed(33) # Change seed until can compute at starting point
+in_file_test <- "Mycotoxin-MCMC-calib.in.R" 
+# Run model
+out_file <- ""
+chains <- list()
+checks <- data.frame()
+samps <- data.frame()
+samps.mcmc <- list()
+
+for (chainnum in 1:4) {
+  outtest.list <- mcsim(model_file=model_file, in_file=in_file_test, chainnum=chainnum)
+  print("Chain: "); print(chainnum)
+  outcheck <- outtest.list$df_check
+  outchain <- outtest.list$df_out
+  # Only save second half (after burn-in)
+  outsamp <- outchain[floor(nrow(outchain) / 2):nrow(outchain), -1]
+  chains <- c(chains, list(as.matrix(outchain)))
+  checks <- rbind(checks, outcheck)
+  samps <- rbind(samps, outsamp)
+  samps.mcmc <- c(samps.mcmc, list(mcmc(outsamp)))
+}
+
+#multicheck
+multicheck <- mcsim.multicheck(model_file=model_file,
+                                 in_file=in_file_test, nsamp = 100)
+
+save(multicheck, file="multicheck_model.calib.Rdata")
+samps.mcmclist <- as.mcmc.list(samps.mcmc)
+save(samps.mcmclist, file = "mcmc_model.calib.Rdata")
+
+# One random sample, random iteration "checks" from last row of each chain
+checksplot <- ggplot(subset(checks,Output_Var %in% c("Ccpt_out", "Ctot_out", "Qu_out", "Qu_tot_out")))+
+  geom_point(aes(x=Data, y=Prediction, color=Output_Var))+
+  scale_x_log10()+
+  scale_y_log10()+
+  geom_abline(slope = 1,intercept = 0)+
+  facet_wrap(~Simulation)
+
+print(checksplot)
+ggsave(file.path(calibplotfolder,"checksplot_model.calib.pdf"), plot = checksplot, width=10, height=10)
+
+```
+
+```{r parameters}
+df_check <- multicheck$df_check
+
+rhat <- gelman.diag(samps.mcmclist,autoburnin=FALSE) 
+M_indx <- grep("M_",names(samps))
+SD_indx <- grep("SD_",names(samps))
+Ln_indx <- grep("Ln",names(samps))
+
+rhat.df <- as.data.frame(rhat$psrf)
+rhat.df$par <- factor(rownames(rhat.df),
+                      levels=rev(rownames(rhat.df)))
+rhatplot <- ggplot(rhat.df)+geom_bar(aes(x=par,y=`Point est.`),stat="identity")+
+  coord_flip()+geom_hline(yintercept=1.2)+
+  theme(axis.text.y = element_text(size = 5))
+
+pdf("DiagnosticPlots_model.calib.pdf",height=8,width=8)
+pairs.panels(samps[,M_indx])
+plot(as.mcmc.list(samps.mcmc)[,M_indx,])
+plot(as.mcmc.list(samps.mcmc)[,SD_indx,])
+plot(as.mcmc.list(samps.mcmc)[,Ln_indx,])
+parmnames <- gsub("M_","",names(samps)[M_indx])
+allindiv.df <- data.frame()
+subsampindx <- sample.int(nrow(samps),50)
+for (i in 1:length(parmnames)) {
+  iparmnames <- paste0(parmnames[i],1:10,".")
+  tmp.samps <- samps[,names(samps) %in% iparmnames]
+  tmp.M <- samps[,rep(paste0("M_",parmnames[i]),10)]
+  tmp.SD <- samps[,rep(paste0("SD_",parmnames[i]),10)]
+  tmp.samps <- exp(tmp.samps*tmp.SD + tmp.M)
+  tmp.samps$iter <- 1:nrow(tmp.samps)
+  tmp.df <- pivot_longer(tmp.samps,1:10)
+  tmp.df$name <- factor(tmp.df$name,levels=rev(iparmnames))
+  p<-ggplot(tmp.df)+geom_boxplot(aes(x=value,y=name))+
+    scale_x_log10()+annotation_logticks(sides="b")
+  print(p)
+  tmp.df$parm <- str_split(tmp.df$name,"\\.",simplify=TRUE)[,1]
+  tmp.df$id <- str_split(tmp.df$name,"\\.",simplify=TRUE)[,3]
+  allindiv.df <- rbind(allindiv.df,subset(tmp.df,iter %in% subsampindx))
+}
+allindiv.df.wide<-pivot_wider(allindiv.df[,-2],names_from=3)
+fillcolor <- viridis::viridis(16)
+pairs.panels(log(allindiv.df.wide[,-(1:2)]),pch=21,
+             bg=fillcolor[as.numeric(allindiv.df.wide$id)])
+
+print(rhatplot)
+dev.off()
+
+#For AUC
+GMAUC <- exp(mean(log(subset(df_check,Output_Var=="AUC")$Prediction)))
+
+#Use median value of GSD for CLtot:
+GSDAUC <- median(exp(multicheck$parms.samp$SD_lnCltot.1.))
+
+#for Cmax
+# This gets the median predictions for each individual 
+cmedian <- aggregate(Prediction ~ Simulation + Time,
+                  data=subset(df_check,Output_Var=="Ccpt"),
+                  FUN=median)
+
+# This gets the predicted cmax for each individual
+cmax <- aggregate(Prediction ~ Simulation,data=cmedian,FUN=max)
+
+# This gets the corresponding tmax and cmax for each individual
+tmaxcmax <- subset(cmedian,Prediction %in% cmax$Prediction)
+
+
+
+```
+
+
+```{r compare simulated data and predictions}
+df_check <- multicheck$df_check
+#out_montecarlo_df$Simulation <- as.numeric(out_montecarlo_df$ID)
+
+for (varnow in c("Ccpt", "Qu", "Qu_met")) {
+  calib05 <-aggregate(Prediction ~ Simulation + Time,
+                          data=subset(df_check,Output_Var==varnow),
+                          FUN=quantile,prob=0.05)
+  calib50 <-aggregate(Prediction ~ Simulation + Time,
+                          data=subset(df_check,Output_Var==varnow),
+                          FUN=quantile,prob=0.5)
+  calib95 <-aggregate(Prediction ~ Simulation + Time,
+                          data=subset(df_check,Output_Var==varnow),
+                          FUN=quantile,prob=0.95)
+  calib <- left_join(left_join(calib05,calib50,by=c("Simulation","Time")),
+                     calib95,by=c("Simulation","Time"))
+  names(calib)[3:5] <- c("Prediction05","Prediction50","Prediction95")
+  dat <- aggregate(Data ~ Simulation + Time,
+                          data=subset(df_check,Output_Var==paste0(varnow,"_out")),
+                          FUN=quantile,prob=0.5)
+  prediction_calib <- ggplot() + 
+    geom_ribbon(aes(x=Time,ymin=Prediction05,ymax=Prediction95,fill="Fitted 90% CI"),data=calib)+
+    geom_line(aes(x=Time,y=Prediction50,color="Fitted Median"),data=calib,alpha=0.5)+
+    geom_point(aes(x=Time,y=Data,shape="Experimental Data"), data=dat)+
+    #geom_point(aes(x=Time,y=value,shape="Original Values"),
+              #data=subset(out_montecarlo_df,variable==paste0(varnow,"_out")))+
+    scale_shape_manual("",values=c(1,16))+
+    scale_fill_viridis_d("",direction = -1)+
+    scale_color_viridis_d("")+xlim(c(0,max(dat$Time)))+
+    ggtitle(varnow)+theme(legend.position = "bottom")+
+    facet_wrap(~Simulation, scales = "free_y")
+  print(prediction_calib)
+  ggsave(file.path(calibplotfolder,paste0(varnow,".calib.pdf")), plot = prediction_calib, 
+         width=7, height=7)
+  
+  prediction_calib_log <- ggplot() + 
+    geom_ribbon(aes(x=Time,ymin=Prediction05,ymax=Prediction95,fill="Fitted 90% CI"),data=calib)+
+    geom_line(aes(x=Time,y=Prediction50,color="Fitted Median"),data=calib,alpha=0.5)+
+    geom_point(aes(x=Time,y=Data,shape="Experimental Data"), data=dat)+
+    #geom_point(aes(x=Time,y=value,shape="Original Values"),
+              #data=subset(out_montecarlo_df,variable==paste0(varnow,"_out")))+
+    scale_shape_manual("",values=c(1,16))+
+    scale_fill_viridis_d("",direction = -1)+
+    scale_color_viridis_d("")+xlim(c(0,max(dat$Time)))+
+    scale_y_log10(limits=c(min(dat$Data),max(dat$Data,calib$Prediction95)))+
+    ggtitle(varnow, paste(" log scale"))+theme(legend.position = "bottom")+
+    facet_wrap(~Simulation, scales = "free_y")
+  print(prediction_calib_log)
+  ggsave(file.path(calibplotfolder,paste0(varnow,".calib.log.pdf")), plot = prediction_calib_log, 
+         width=10, height=7)
+}
+
+# Redefine the print.ggplot function
+print.ggplot <- function(x, ...) {
+  # Original print function
+  ggplot2:::print.ggplot(x, ...)
+  
+  # Define the folder and filename
+  folder <- "C:/Users/lvisinti/OneDrive - UGent/Projects/TAMU modelling CIT/mycotoxin-pk-model-main/Mycotoxin-PK-model-main/Calibration Plots"
+  current_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  filename <- paste0(folder, "\\plot_", current_time, ".jpeg")
+  
+  # Save the plot
+  ggsave(filename, plot = x, width = 10, height = 7)
+}
+
+#checksplot blood
+checksplot <- ggplot(subset(checks, Output_Var %in% c("Ctot_out","Ccpt_out"))) +
+  geom_point(aes(x=Data, y=Prediction, color=Output_Var)) + # Using different shapes based on Output_Var
+  scale_x_log10() +
+  scale_y_log10() +
+  expand_limits(y = 0)+
+  expand_limits(x = 0)+
+  theme(legend.position = "bottom")+
+  geom_abline(slope = 1, intercept = 0) +
+  labs(color="Output Variable", shape="Output Varia ble") + # Adding legend titles
+  theme_minimal()
+
+print(checksplot)
+ggsave(file.path(calibplotfolder,"checksplot_blood.calib.pdf"), plot = checksplot, width=7, height=5)
+
+#checksplot urine
+checksplot <- ggplot(subset(checks, Output_Var %in% c("Qu_out", "Qu_tot_out"))) +
+  geom_point(aes(x=Data, y=Prediction, color=Output_Var)) + # Using different shapes based on Output_Var
+  scale_x_log10() +
+  scale_y_log10() +
+  expand_limits(x = 0, y = 0)+
+  geom_abline(slope = 1, intercept = 0) +
+  theme(legend.position = "bottom")+
+  labs(color="Output Variable", shape="Output Variable") + # Adding legend titles
+  theme_minimal()
+
+print(checksplot)
+ggsave(file.path(calibplotfolder,"checksplot_urine.calib.pdf"), plot = checksplot, width=7, height=5)
+
+# Create filename with current date and time
+current_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
+filename1 <- paste0("distribution noln_", current_time, ".csv")
+filename2 <- paste0("rhat_", current_time, ".csv")
+
+# Save dataframe to CSV
+samps_notln <- exp(samps)
+write.csv(x=samps_notln, file = filename1, row.names = TRUE)
+write.csv(x=rhat.df, file = filename2, row.names = TRUE)
+
+samps_long <- samps %>%
+  select(1:7) %>%
+  pivot_longer(cols = everything(), names_to = "Parameter", values_to = "Value")
+
+p <- ggplot(samps_long, aes(x = Value, fill = Parameter)) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(~ Parameter, ncol = 1, strip.position = "left", scales = "fixed") +
+  theme_minimal() +
+  labs(title = "Distribution of Parameters", x = "Value", y = "Density") +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+ggsave(file.path(calibplotfolder,"postdistribution_fixed.pdf"), plot = p, width=5, height=9)
+p
+
+AUC <- df_check[df_check$Output_Var == "AUC", ]
+filename3 <- paste0("AUC_", current_time, ".csv")
+write.csv(x=AUC, file = filename3, row.names = TRUE)
+```
+
+```{r session info}
+sessionInfo()
+```
+
+
