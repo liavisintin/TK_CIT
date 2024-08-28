@@ -10,6 +10,8 @@ library(ggplot2)
 library(here)
 library(tidyverse)
 library(psych)
+library(tidyr)
+library(truncnorm)
 mdir <- "MCSim"
 source(here::here(mdir,"setup_MCSim.R"))
 set_PATH() # For Windows
@@ -28,7 +30,7 @@ in_file_default <- "Mycotoxin-default-run.in.R"
 out_file_default <- "Mycotoxin-default-run.out"
 out_default <- mcsim(model_file=model_file, in_file = in_file_default,
                     out_file = out_file_default)
-out_default_df <- pivot_longer(out_default,cols=2:4)
+out_default_df <- pivot_longer(out_default,cols=2:6)
 # Plot
 ggplot1 <- ggplot(out_default_df)+geom_line(aes(x=Time,y=value))+
   facet_wrap(~name,scales="free_y")
@@ -223,8 +225,6 @@ for (varnow in c("Ccpt", "Qu", "Qu_met")) {
     geom_ribbon(aes(x=Time,ymin=Prediction05,ymax=Prediction95,fill="Fitted 90% CI"),data=calib)+
     geom_line(aes(x=Time,y=Prediction50,color="Fitted Median"),data=calib,alpha=0.5)+
     geom_point(aes(x=Time,y=Data,shape="Experimental Data"), data=dat)+
-    #geom_point(aes(x=Time,y=value,shape="Original Values"),
-              #data=subset(out_montecarlo_df,variable==paste0(varnow,"_out")))+
     scale_shape_manual("",values=c(1,16))+
     scale_fill_viridis_d("",direction = -1)+
     scale_color_viridis_d("")+xlim(c(0,max(dat$Time)))+
@@ -233,22 +233,6 @@ for (varnow in c("Ccpt", "Qu", "Qu_met")) {
   print(prediction_calib)
   ggsave(file.path(calibplotfolder,paste0(varnow,".calib.pdf")), plot = prediction_calib, 
          width=7, height=7)
-  
-  prediction_calib_log <- ggplot() + 
-    geom_ribbon(aes(x=Time,ymin=Prediction05,ymax=Prediction95,fill="Fitted 90% CI"),data=calib)+
-    geom_line(aes(x=Time,y=Prediction50,color="Fitted Median"),data=calib,alpha=0.5)+
-    geom_point(aes(x=Time,y=Data,shape="Experimental Data"), data=dat)+
-    #geom_point(aes(x=Time,y=value,shape="Original Values"),
-              #data=subset(out_montecarlo_df,variable==paste0(varnow,"_out")))+
-    scale_shape_manual("",values=c(1,16))+
-    scale_fill_viridis_d("",direction = -1)+
-    scale_color_viridis_d("")+xlim(c(0,max(dat$Time)))+
-    scale_y_log10(limits=c(min(dat$Data),max(dat$Data,calib$Prediction95)))+
-    ggtitle(varnow, paste(" log scale"))+theme(legend.position = "bottom")+
-    facet_wrap(~Simulation, scales = "free_y")
-  print(prediction_calib_log)
-  ggsave(file.path(calibplotfolder,paste0(varnow,".calib.log.pdf")), plot = prediction_calib_log, 
-         width=10, height=7)
 }
 
 # Redefine the print.ggplot function
@@ -257,7 +241,7 @@ print.ggplot <- function(x, ...) {
   ggplot2:::print.ggplot(x, ...)
   
   # Define the folder and filename
-  folder <- "C:/Users/lvisinti/OneDrive - UGent/Projects/TAMU modelling CIT/mycotoxin-pk-model-main/Mycotoxin-PK-model-main/Calibration Plots"
+  folder <- "ADD PATH"
   current_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
   filename <- paste0(folder, "\\plot_", current_time, ".jpeg")
   
@@ -294,7 +278,7 @@ checksplot <- ggplot(subset(checks, Output_Var %in% c("Qu_out", "Qu_tot_out"))) 
 print(checksplot)
 ggsave(file.path(calibplotfolder,"checksplot_urine.calib.pdf"), plot = checksplot, width=7, height=5)
 
-# Create filename with current date and time
+#to plot postdistributions
 current_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
 filename1 <- paste0("distribution noln_", current_time, ".csv")
 filename2 <- paste0("rhat_", current_time, ".csv")
@@ -326,6 +310,66 @@ AUC <- df_check[df_check$Output_Var == "AUC", ]
 filename3 <- paste0("AUC_", current_time, ".csv")
 write.csv(x=AUC, file = filename3, row.names = TRUE)
 ```
+
+```{r compare prior and posterior distributions}
+
+# Define the geometric mean and standard deviation
+post <- readxl::read_excel("C:/Users/lvisinti/OneDrive - UGent/Projects/TAMU modelling CIT/mycotoxin-pk-model-main/Mycotoxin-PK-model-main/Mycotoxin-MCMC-test-calib1234.samps.out.xlsx")
+
+post <- post[,-1]
+
+#M_post <- post[, seq(1, 14, by = 2)]
+
+# Melt the data to long format
+df_long <- pivot_longer(post, cols = everything(), names_to = "Variable", values_to = "Value")
+
+# Plot the data
+ggplot(df_long, aes(x = Value)) +
+  geom_histogram(binwidth = , fill = "grey", color = "black", alpha = 0.7) +
+  facet_wrap(~ Variable, scales = "free_x") +
+    theme_minimal()
+
+# Define means, standard deviations, and truncation limits for the theoretical distributions
+variable_names <- colnames(post)
+means<-c(-1.76, 0.7, -0.7, 0.7, -0.7,  0.7, -3.33, 0.7, -3.33, 0.7, -0.1, 0.7, -0.1, 0.7)
+sds <- c(1.15, 0.7, 1.15, 0.7, 1.15, 0.7, 1.15, 0.7, 1.15, 0.7, 1.15, 0.7, 1.15, 0.7)    # Replace with actual standard deviations for V2, V4, ..., V14
+lower_limits <- c(-2.3, -Inf, -Inf, -Inf, -4.6, -Inf, -Inf, -Inf, -Inf, -Inf, -Inf, -Inf, -Inf, -Inf)  # Replace with actual lower truncation limits for V2, V4, ..., V14
+upper_limits <- c(0, Inf, Inf, Inf, -0.01, Inf, Inf, Inf, Inf, Inf, Inf, Inf, Inf, Inf)    # Replace with actual upper truncation limits for V2, V4, ..., V14
+distribution_types <- c("truncated", "halfnormal", "normal", "halfnormal", "truncated","halfnormal", "normal", "halfnormal","normal", "halfnormal", "normal", "halfnormal", "truncated", "halfnormal")
+
+#Create a dataframe for the theoretical truncated distributions
+theoretical_data <- data.frame()
+for (i in seq(1, 14)) {
+  variable_name <- variable_names[i]
+  mean <- means[i]
+  sd <- sds[i]
+  lower <- lower_limits[i]
+  upper <- upper_limits[i]
+  distribution_type <- distribution_types[i]
+  
+  if (distribution_type == "normal") {
+    x_values <- seq(mean - 4 * sd, mean + 4 * sd, length.out = 100)
+    y_values <- dnorm(x_values, mean = mean, sd = sd)
+  } else if (distribution_type == "halfnormal") {
+    x_values <- seq(0, mean + 4 * sd, length.out = 100)
+    y_values <- 2 * dnorm(x_values, mean = 0, sd = sd)  # Half-normal density
+  } else if (distribution_type == "truncated") {
+    x_values <- seq(max(lower, mean - 4 * sd), min(upper, mean + 4 * sd), length.out = 100)
+    y_values <- dtruncnorm(x_values, a = lower, b = upper, mean = mean, sd = sd)
+  }
+  
+  temp_df <- data.frame(Variable = variable_name, x = x_values, y = y_values)
+  theoretical_data <- rbind(theoretical_data, temp_df)
+}
+
+# Plot histograms and overlay theoretical truncated distributions using ggplot2 and facet_wrap
+ggplot() +
+  geom_histogram(data = df_long, aes(x = Value, y = ..density..), fill = "darkgrey", color = "black", alpha = 0.5, bins = 50) +
+  geom_line(data = theoretical_data, aes(x = x, y = y), color = "black", size = 1)  +
+  facet_wrap(~ Variable, scales = "free") +
+  theme(text = element_text(size=13))
+```
+
 
 ```{r session info}
 sessionInfo()
